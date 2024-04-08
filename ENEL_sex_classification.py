@@ -27,6 +27,7 @@ from monai.transforms import (
     ScaleIntensity,
 )
 
+#Set up the depthwise and pointwise operator layers in the bottleneck residual blocks of the MobileNetV2 architecture
 class DepthwiseSeparableConv3D(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
         super(DepthwiseSeparableConv3D, self).__init__()
@@ -38,6 +39,7 @@ class DepthwiseSeparableConv3D(nn.Module):
         x = self.pointwise(x)
         return x
 
+#Build out the MobileNetV2 architecture, using ReLu instead of ReLu6 and 13 instead of 17 bottleneck layers 
 class MobileNetV2_3D(nn.Module):
     def __init__(self, in_channels, num_classes=2):
         super(MobileNetV2_3D, self).__init__()
@@ -75,7 +77,7 @@ def set_random_seed(seed_value):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-#Define a function that will count the number 
+#Define a function that will count the number of patients in each class
 def extract_filenames(root_dir, class_names):
     image_files = [[os.path.join(root_dir, class_names[i], x) for x in os.listdir(os.path.join(root_dir, class_names[i]))] for i in range(len(class_names))]
     num_each = [len(files) for files in image_files]
@@ -83,6 +85,7 @@ def extract_filenames(root_dir, class_names):
     image_class_list = [i for i, num in enumerate(num_each) for _ in range(num)]
     return image_files_list, image_class_list, num_each
 
+#Define a function to call for cross-validation
 def split_data_values(data, fold_number, total_folds):
     # Calculate the size of each fold
     fold_size = len(data) // total_folds
@@ -118,10 +121,22 @@ for split, directory in directories.items():
     data[f"{split}_image_files_list"] = image_files_list
     data[f"{split}_image_class_list"] = image_class_list
     data[f"{split}_num_each"] = num_each
-    #for image_file in image_files_list:   
-      #nifti_img = nib.load(image_file)
-      #image_data = nifti_img.get_fdata()
-      #image_dimensions.append(image_data.shape)
+    for image_file in image_files_list:   
+      nifti_img = nib.load(image_file)
+      image_data = nifti_img.get_fdata()
+      image_dimensions.append(image_data.shape)
+      
+      #If you want to view the central slice of each MRI, uncomment the following lines. These lines will save each image to the root directory
+      
+      #slice_index = image_data.shape[0]/2
+      #selected_slice = image_data[int(slice_index),:,:]
+      #plt.imshow(selected_slice, cmap='gray')
+      #plt.axis('off')
+      #plt.colorbar()
+      #image_title = image_file.split('/')[-1][:-7]
+      #plt.imsave(root_dir+f'{image_data.shape}_{image_title}.png', selected_slice, cmap='gray')
+      #plt.close()
+      
     num_total = len(image_files_list)
     print(f"Total image count in {split}: {num_total}")
     print(f"Label counts in {split}: {num_each}")
@@ -146,7 +161,7 @@ for dimension in image_dimensions:
 for dimension, count in dimension_counts.items():
     print(f"{dimension}: {count}")
     
-#Print the original image size for user
+#Print the new image size for user
 new_img_size = (96, 128, 128)
 print(f"Images resized to: {new_img_size}")
 print(f"Label names: {class_names}")
@@ -183,29 +198,32 @@ class Dataset(torch.utils.data.Dataset):
         img = self.transforms(self.image_files[index])
         return img, self.labels[index]
 
+#Define the batch size according to the image sizes used and the GPU RAM available
 batch_size = 15
 print(f"Batch size: {batch_size}")
 
-
-
+#Define the number of runs through model development that will be performed, the number of folds in cross-validation, the types of architectures, and the directory to write results to
 total_runs = 3
 val_split = 5
 architectures = ['DenseNet121','MobileNetV2','ResNet18']
 results_dir = root_dir+'Results'
 
-"""
-
+#Loop through the types of architectures
 for architecture in architectures:
   os.makedirs(results_dir+f'/{architecture}', exist_ok=True)
+  
+  #Loop through the number of model development runs
   for run in np.arange(1,total_runs+1):   
       set_random_seed(run)   
       os.makedirs(results_dir+f'/{architecture}/Run{run}', exist_ok=True)
       
+      #Loop through the folds
       for fold in np.arange(1,val_split+1):
           torch.cuda.empty_cache()
           root_dir = results_dir+f'/{architecture}/Run{run}/Fold{fold}'  
           os.makedirs(root_dir, exist_ok=True)
           
+          #Define the training and testing data using cross validation
           data['train_x'],data['val_x'] = split_data_values(data['development_x'], fold, val_split)
           data['train_y'],data['val_y'] = split_data_values(data['development_y'], fold, val_split)
   
@@ -238,7 +256,7 @@ for architecture in architectures:
           
           optimizer = torch.optim.Adam(model.parameters(), 1e-4)
           
-          # start a typical PyTorch training
+          #Start a typical PyTorch training
           val_interval = 1
           best_metric = -1
           best_metric_epoch = -1
@@ -250,13 +268,15 @@ for architecture in architectures:
           
           results_list = []
           
+          #Loop through the number of epochs allowed for each fold
           for epoch in range(max_epochs):
               print("-" * 10)
               print(f"Architecture {architecture}, run {run}, fold {fold}, epoch {epoch + 1}/{max_epochs}")
               model.train()
               epoch_loss = 0
               step = 0
-          
+              
+              #Train the model
               for batch_data in train_loader:
                   step += 1
                   inputs, labels = batch_data[0].to(device), batch_data[1].to(device)
@@ -273,7 +293,8 @@ for architecture in architectures:
               epoch_loss /= step
               epoch_loss_values.append(epoch_loss)
               print(f"epoch {epoch + 1} average loss: {epoch_loss:.4f}")
-          
+              
+              #Evaluate the model on the training data and the validation data
               if (epoch + 1) % val_interval == 0:
                   model.eval()
                   train_y_true = []
@@ -301,7 +322,7 @@ for architecture in architectures:
                               val_y_true.append(torch.argmax(val_labels[i]).item())
                               val_y_pred.append(pred[i].item())
                 
-                  # Calculate balanced accuracy
+                  # Calculate balanced accuracy (only really necessary for imbalanced data)
                   train_metric = balanced_accuracy_score(train_y_true, train_y_pred)
                   val_metric = balanced_accuracy_score(val_y_true, val_y_pred)
                   metric_values.append(val_metric)
@@ -421,9 +442,9 @@ for architecture in architectures:
           np.save(os.path.join(root_dir, "testing_results.npy"), np.array(accuracy))
           
           print(class_accuracies)
-      
 
-"""
+
+#Define a function to plot the learning curve for all epochs of a single run
 def plot_learning_curves(results_folds, testing_folds, subplot_title, architecture, run, min_y, max_y):
     best_val = []
     best_train = []
@@ -450,11 +471,12 @@ def plot_learning_curves(results_folds, testing_folds, subplot_title, architectu
     
     for (subplot_label, subplot_data), ax in zip(data_lists.items(), axs.flatten()):
         for label, data in subplot_data.items():
-            ax.plot(range(len(data)), data, label=label)
+            ax.plot(np.arange(1,len(data)+1), data, label=label)
         ax.set_xlabel('Epochs')
         ax.set_ylabel('Classification Accuracy')
         ax.legend()
         ax.set_title(subplot_label)
+        ax.set_xlim(1, len(data))
         ax.set_ylim(min_y, max_y)
     
     plt.suptitle(title)
@@ -464,6 +486,7 @@ def plot_learning_curves(results_folds, testing_folds, subplot_title, architectu
     
     return best_train,best_val,best_test,np.min(max_epoch)
 
+#Define a function to extract the learning results from model development and model testing
 def results_full(architectures, total_runs, min_y, max_y):
     all_results = {}
     min_epoch_per_run = []
@@ -517,6 +540,7 @@ def results_full(architectures, total_runs, min_y, max_y):
     
     return all_results,np.min(min_epoch_per_run)
 
+#Define a function to calculate the statistical difference between validation results from different architectures
 def conduct_t_test(results_dict, metric):
     combinations = list(results_dict.keys())
     num_combinations = len(combinations)
@@ -548,7 +572,8 @@ def conduct_t_test(results_dict, metric):
                 print("Statistically different (Wilcoxon)\n")
             else:
                 print("Not statistically different (Wilcoxon)\n")
-    
+
+#Define a function to plot the average learning curves for training and validation for each architecture tested in model development
 def plot_average_learning_curve_single(architectures, results_dict,min_y,max_y,min_epoch_to_plot):
     
     colours = ['b', 'r', 'g']
@@ -564,6 +589,8 @@ def plot_average_learning_curve_single(architectures, results_dict,min_y,max_y,m
         
         train_std = results_array[1][0]
         valid_std = results_array[1][1]
+        
+        print(f'{architecture}, '+'Train-Validation: '+str(np.round(np.average(np.abs(train_score-valid_score)),3))+', Avg train std: '+str(np.round(np.average(train_std),3))+', Avg validation std: '+str(np.round(np.average(valid_std),3)))
         
         epochs = range(1, len(train_score) + 1)
         
@@ -598,6 +625,4 @@ results_dict,min_epoch_to_plot = results_full(architectures, total_runs, min_y, 
 conduct_t_test(results_dict,'Validation')
 
 plot_average_learning_curve_single(architectures,results_dict,min_y,max_y,min_epoch_to_plot)
-
-
   
